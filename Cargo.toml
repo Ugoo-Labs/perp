@@ -1,0 +1,5 @@
+[workspace]
+members = [
+    "src/perp","src/vault"
+]
+resolver = "2"
