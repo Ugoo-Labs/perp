@@ -291,7 +291,7 @@ impl Storable for StateDetails {
     }
 }
 
-#[derive(CandidType, Deserialize, Clone, Copy)]
+#[derive(CandidType, Default, Deserialize, Clone, Copy)]
 pub struct TickDetails {
     pub liq_bounds_token0: LiquidityBoundary,
 

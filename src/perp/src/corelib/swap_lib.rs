@@ -12,6 +12,66 @@ type Amount = u128;
 type MB = HashMap<u64, u128>;
 type TD = HashMap<u64, TickDetails>;
 
+/// Get Best Offer
+///
+///Gets the best offer for either selling or buying
+
+pub fn _get_best_offer<'a>(
+    buy: bool,
+    current_tick: Tick,
+    stopping_tick: Tick,
+    integrals_bitmaps: &'a mut MB,
+    ticks_details: &'a mut TD,
+) -> Option<Tick> {
+    let mut resulting_tick = 0;
+    let mut loop_current_tick = current_tick;
+    while !(_exceeded_stopping_tick(loop_current_tick, stopping_tick, buy)) {
+        let (integral, bit_position) = _int_and_dec(loop_current_tick);
+        let bitmap = match integrals_bitmaps.get(&integral) {
+            Some(&res) => res,
+            None => {
+                // if integral has no bitmap means that means  no tick within that integral   is
+                //initialised
+
+                // calculates the  next_default tick (See bitmap_lib)
+                // if next default tick exceeds stopping tick
+                //breaks else
+                // updates current tick to the next default tick
+
+                let next_default_tick = _next_default_tick(integral, buy);
+
+                loop_current_tick = next_default_tick;
+                //stops currrent iteration,starts the next at the next default tick
+                continue;
+            }
+        };
+        let tick_details = match ticks_details.get(&loop_current_tick) {
+            Some(res) => res,
+            None => &TickDetails::default(),
+        };
+        let liquidity_boundary = if buy {
+            tick_details.liq_bounds_token0
+        } else {
+            tick_details.liq_bounds_token1
+        };
+
+        if liquidity_boundary._liquidity_within() > 0 {
+            resulting_tick = loop_current_tick;
+            break;
+        }
+
+        let next_initialised_tick = _next_initialised_tick(bitmap, integral, bit_position, buy);
+
+        loop_current_tick = next_initialised_tick;
+    }
+
+    if resulting_tick == 0 {
+        return None;
+    } else {
+        return Some(resulting_tick);
+    }
+}
+
 struct SwapTickConstants {
     tick: Tick,
     order_size: Amount,
@@ -74,7 +134,7 @@ impl<'a> SwapParams<'a> {
 
         let mut loop_current_tick = self.init_tick;
 
-        'swap_loop: loop {
+        while !(_exceeded_stopping_tick(loop_current_tick, self.stopping_tick, self.buy)) {
             let (integral, bit_position) = _int_and_dec(loop_current_tick);
 
             let bitmap = match self.integrals_bitmaps.get(&integral) {
@@ -90,12 +150,12 @@ impl<'a> SwapParams<'a> {
 
                     let next_default_tick = _next_default_tick(integral, self.buy);
                     if _exceeded_stopping_tick(next_default_tick, self.stopping_tick, self.buy) {
-                        break 'swap_loop;
+                        break;
                     };
 
                     loop_current_tick = next_default_tick;
                     //stops currrent iteration,starts the next at the next default tick
-                    continue 'swap_loop;
+                    continue;
                 }
             };
 
@@ -140,17 +200,13 @@ impl<'a> SwapParams<'a> {
                 }
 
                 if amount_remaining == 0 {
-                    break 'swap_loop;
+                    break;
                 }
             }
 
             //println!()
             let next_initialised_tick =
                 _next_initialised_tick(bitmap, integral, bit_position, self.buy);
-
-            if _exceeded_stopping_tick(next_initialised_tick, self.stopping_tick, self.buy) {
-                break 'swap_loop;
-            };
 
             loop_current_tick = next_initialised_tick;
         }
@@ -342,7 +398,7 @@ mod test {
             let order_size = 100_000;
 
             let (amount_out, amount_remaining, resulting_tick, _crossed_ticks) =
-                _swap(order_size, false, swapping_tick, 220_00_000);
+                _swap(order_size, false, swapping_tick, 199_00_000);
 
             assert_eq!(amount_out, order_size * 2); //trade was executed at 200 percent
             assert_eq!(amount_remaining, 0);
