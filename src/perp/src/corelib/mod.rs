@@ -19,12 +19,25 @@ mod unit_test {
     use super::*;
     use crate::types::{Amount, Tick, TickDetails};
     use std::cell::RefCell;
-    use std::collections::HashMap;
+
+    use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
+    use ic_stable_structures::{DefaultMemoryImpl, StableBTreeMap};
+
+    type Memory = VirtualMemory<DefaultMemoryImpl>;
+
+    const _TICKS_DETAILS_MEMORY: MemoryId = MemoryId::new(4);
+
+    const _INTEGRALS_BITMAPS_MEMORY: MemoryId = MemoryId::new(5);
 
     thread_local! {
-        static MULTIPLIERS_BITMAPS:RefCell<HashMap<u64,u128>> = RefCell::new(HashMap::new());
 
-        static TICKS_DETAILS :RefCell<HashMap<Tick,TickDetails>> = RefCell::new(HashMap::new());
+        static MEMORY_MANAGER:RefCell<MemoryManager<DefaultMemoryImpl>> = RefCell::new(MemoryManager::init(DefaultMemoryImpl::default())) ;
+        static TICKS_DETAILS:RefCell<StableBTreeMap<Tick,TickDetails,Memory>>= RefCell::new(StableBTreeMap::init(MEMORY_MANAGER.with_borrow(
+            |mem|{mem.get(_TICKS_DETAILS_MEMORY)})));
+
+        static INTEGRALS_BITMAPS:RefCell<StableBTreeMap<u64,u128,Memory>>= RefCell::new(StableBTreeMap::init(MEMORY_MANAGER.with_borrow_mut(|mem|{
+            mem.get(_INTEGRALS_BITMAPS_MEMORY)
+        }))) ;
     }
 
     #[test]
@@ -133,7 +146,7 @@ mod unit_test {
     fn _open_order(order: &mut order_lib::LimitOrder) {
         TICKS_DETAILS.with(|ref_ticks_details| {
             let ticks_details = &mut *ref_ticks_details.borrow_mut();
-            MULTIPLIERS_BITMAPS.with(|ref_multiplier_bitmaps| {
+            INTEGRALS_BITMAPS.with(|ref_multiplier_bitmaps| {
                 let multipliers_bitmaps = &mut *ref_multiplier_bitmaps.borrow_mut();
                 let mut open_order_params = order_lib::OpenOrderParams {
                     order,
@@ -150,11 +163,11 @@ mod unit_test {
     fn _close_order(order: &order_lib::LimitOrder) -> (Amount, Amount) {
         TICKS_DETAILS.with(|ref_ticks_details| {
             let ticks_details = &mut *ref_ticks_details.borrow_mut();
-            MULTIPLIERS_BITMAPS.with(|ref_multiplier_bitmaps| {
+            INTEGRALS_BITMAPS.with(|ref_multiplier_bitmaps| {
                 let multipliers_bitmaps = &mut *ref_multiplier_bitmaps.borrow_mut();
                 let mut close_order_params = order_lib::CloseOrderParams {
                     order,
-                    multipliers_bitmaps,
+                    integrals_bitmaps: multipliers_bitmaps,
                     ticks_details,
                 };
                 close_order_params.close_order()
@@ -170,7 +183,7 @@ mod unit_test {
     ) -> (Amount, Amount, Tick, Vec<Tick>) {
         TICKS_DETAILS.with(|ref_ticks_details| {
             let ticks_details = &mut ref_ticks_details.borrow_mut();
-            MULTIPLIERS_BITMAPS.with(|ref_multiplier_bitmaps| {
+            INTEGRALS_BITMAPS.with(|ref_multiplier_bitmaps| {
                 let multipliers_bitmaps = &mut ref_multiplier_bitmaps.borrow_mut();
                 let mut swap_params = swap_lib::SwapParams {
                     buy,

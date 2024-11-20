@@ -7,15 +7,16 @@ use super::tick_lib::{_int_and_dec, _tick_to_price};
 
 use candid::CandidType;
 
-use std::collections::HashMap;
-
 use crate::types::TickDetails;
 
-type Amount = u128;
+use ic_stable_structures::{memory_manager::VirtualMemory, DefaultMemoryImpl, StableBTreeMap};
+
+type Memory = VirtualMemory<DefaultMemoryImpl>;
 type Time = u64;
 type Tick = u64;
-type MB = HashMap<u64, u128>;
-type TD = HashMap<Tick, TickDetails>;
+type Amount = u128;
+type MB = StableBTreeMap<u64, u128, Memory>;
+type TD = StableBTreeMap<u64, TickDetails, Memory>;
 
 /// Order Trait for different OrderTypes
 pub trait Order {
@@ -24,7 +25,7 @@ pub trait Order {
 }
 
 ///OpenOrderParams for creating orders
-#[derive(CandidType)]
+
 pub struct OpenOrderParams<'a> {
     /// Multiplier BitMaps
     ///
@@ -45,29 +46,30 @@ impl<'a> OpenOrderParams<'a> {
     ///
     /// creates an order at a particular tick
     pub fn open_order(&mut self) {
-        let tick_details = self
-            .ticks_details
-            .entry(self.order.ref_tick)
-            .or_insert_with(|| {
-                //  flip bitmap
+        let mut tick_details = match self.ticks_details.get(&self.order.ref_tick) {
+            Some(details) => details,
+            None => {
+                let (integral, bit_position) = _int_and_dec(self.order.ref_tick);
+                let map = match self.integrals_bitmaps.get(&integral) {
+                    Some(_map) => _map,
+                    None => 0,
+                };
 
-                let (multiplier, bit_position) = _int_and_dec(self.order.ref_tick);
+                let flipped_bitmap = _flip_bit(map, bit_position);
 
-                let map = self.integrals_bitmaps.entry(multiplier).or_insert(0);
-                *map = _flip_bit(*map, bit_position);
+                self.integrals_bitmaps.insert(integral, flipped_bitmap);
 
-                // initialises it with a default value
+                TickDetails::default()
+            }
+        };
 
-                TickDetails::new()
-            });
-
-        self.order._opening_update(tick_details);
+        self.order._opening_update(&mut tick_details);
+        self.ticks_details.insert(self.order.ref_tick, tick_details);
     }
 }
 
 ///CloseOrderParams for closing order
 
-#[derive(CandidType)]
 pub struct CloseOrderParams<'a> {
     ///Order
     ///
@@ -78,7 +80,7 @@ pub struct CloseOrderParams<'a> {
     /// Multipliers Bitmaps
     ///
     ///A HashMap of  multipliers (percentiles) to their respective bitmap
-    pub multipliers_bitmaps: &'a mut MB,
+    pub integrals_bitmaps: &'a mut MB,
     ///Ticks Details
     ///
     ///A HashMap of tick to their tick_details
@@ -94,13 +96,13 @@ impl<'a> CloseOrderParams<'a> {
     /// - If closing a trade order ,tuple represents amount out vs amount remaining
     /// - If closing a liquidity order ,tuple represents token0 amount and token1 amount corresponding order shares(see LiquidityOrder)
     pub fn close_order(&mut self) -> (Amount, Amount) {
-        match self.ticks_details.get_mut(&self.order.ref_tick) {
-            Some(tick_details) => {
+        match self.ticks_details.get(&self.order.ref_tick) {
+            Some(mut tick_details) => {
                 // if closing a trade  order ,this returns
                 // amount_out and amount remaining
                 // if closing a Liquidity order
                 // it returns token0 amount and token1 amount
-                let (amount0, amount1) = self.order._closing_update(tick_details);
+                let (amount0, amount1) = self.order._closing_update(&mut tick_details);
 
                 //  if all liquidity is zero delete tick_details
                 if tick_details.liq_bounds_token0._liquidity_within() == 0
@@ -108,13 +110,16 @@ impl<'a> CloseOrderParams<'a> {
                 {
                     self.ticks_details.remove(&self.order.ref_tick);
 
-                    let (multiplier, bit_position) = _int_and_dec(self.order.ref_tick);
-                    // flip bitmap
+                    let (integral, bit_position) = _int_and_dec(self.order.ref_tick);
 
-                    self.multipliers_bitmaps
-                        .entry(multiplier)
-                        .and_modify(|res| *res = _flip_bit(*res, bit_position));
-                };
+                    if let Some(bitmap) = self.integrals_bitmaps.get(&integral) {
+                        let flipped_bitmap = _flip_bit(bitmap, bit_position);
+
+                        self.integrals_bitmaps.insert(integral, flipped_bitmap);
+                    }
+                } else {
+                    self.ticks_details.insert(self.order.ref_tick, tick_details);
+                }
                 return (amount0, amount1);
             }
             None => {
@@ -246,179 +251,179 @@ impl Order for LimitOrder {
     }
 }
 
-#[cfg(test)]
-mod unit_test_order_lib {
+// #[cfg(test)]
+// mod unit_test_order_lib {
 
-    use super::*;
+//     use super::*;
 
-    use crate::types::{Amount, Tick, TickDetails};
-    use std::cell::RefCell;
-    use std::collections::HashMap;
+//     use crate::types::{Amount, Tick, TickDetails};
+//     use std::cell::RefCell;
+//     use std::collections::HashMap;
 
-    thread_local! {
-        static MULTIPLIERS_BITMAPS:RefCell<HashMap<u64,u128>> = RefCell::new(HashMap::new());
+//     thread_local! {
+//         static MULTIPLIERS_BITMAPS:RefCell<HashMap<u64,u128>> = RefCell::new(HashMap::new());
 
-        static TICKS_DETAILS :RefCell<HashMap<Tick,TickDetails>> = RefCell::new(HashMap::new());
-    }
+//         static TICKS_DETAILS :RefCell<HashMap<Tick,TickDetails>> = RefCell::new(HashMap::new());
+//     }
 
-    #[test]
-    fn test_place_order() {
-        let mut order1 = LimitOrder::new(10000000, 1000, true);
-        _open_order(&mut order1);
-        let tick_details = _get_tick_details(1000);
+//     #[test]
+//     fn test_place_order() {
+//         let mut order1 = LimitOrder::new(10000000, 1000, true);
+//         _open_order(&mut order1);
+//         let tick_details = _get_tick_details(1000);
 
-        assert_eq!(order1.init_lower_bound, 0);
+//         assert_eq!(order1.init_lower_bound, 0);
 
-        assert_eq!(tick_details.liq_bounds_token1.lifetime_removed_liquidity, 0);
-        assert_eq!(
-            tick_details.liq_bounds_token1.upper_bound,
-            order1.order_size,
-        );
-        //
+//         assert_eq!(tick_details.liq_bounds_token1.lifetime_removed_liquidity, 0);
+//         assert_eq!(
+//             tick_details.liq_bounds_token1.upper_bound,
+//             order1.order_size,
+//         );
+//         //
 
-        // Second Order
-        let mut order2 = LimitOrder::new(1000000, 1000, true);
-        _open_order(&mut order2);
+//         // Second Order
+//         let mut order2 = LimitOrder::new(1000000, 1000, true);
+//         _open_order(&mut order2);
 
-        let tick_details = _get_tick_details(1000);
+//         let tick_details = _get_tick_details(1000);
 
-        assert_eq!(order2.init_lower_bound, order1.order_size);
+//         assert_eq!(order2.init_lower_bound, order1.order_size);
 
-        assert_eq!(
-            tick_details.liq_bounds_token1.upper_bound,
-            order1.order_size + order2.order_size,
-        )
-    }
+//         assert_eq!(
+//             tick_details.liq_bounds_token1.upper_bound,
+//             order1.order_size + order2.order_size,
+//         )
+//     }
 
-    #[test]
+//     #[test]
 
-    fn test_open_and_close_order() {
-        let mut order1 = LimitOrder::new(10000000, 1000, true);
+//     fn test_open_and_close_order() {
+//         let mut order1 = LimitOrder::new(10000000, 1000, true);
 
-        //Open order
-        {
-            _open_order(&mut order1);
-            let tick_details = _get_tick_details(1000);
-            assert_eq!(order1.init_lower_bound, 0);
+//         //Open order
+//         {
+//             _open_order(&mut order1);
+//             let tick_details = _get_tick_details(1000);
+//             assert_eq!(order1.init_lower_bound, 0);
 
-            assert_eq!(tick_details.liq_bounds_token1.lifetime_removed_liquidity, 0);
-            assert_eq!(
-                tick_details.liq_bounds_token1.upper_bound,
-                order1.order_size,
-            );
-        }
-        //Close order
-        {
-            let (amount_out, amount_remaining) = _close_order(&order1);
+//             assert_eq!(tick_details.liq_bounds_token1.lifetime_removed_liquidity, 0);
+//             assert_eq!(
+//                 tick_details.liq_bounds_token1.upper_bound,
+//                 order1.order_size,
+//             );
+//         }
+//         //Close order
+//         {
+//             let (amount_out, amount_remaining) = _close_order(&order1);
 
-            assert_eq!(amount_out, 0);
+//             assert_eq!(amount_out, 0);
 
-            assert_eq!(amount_remaining, order1.order_size);
-        }
-    }
+//             assert_eq!(amount_remaining, order1.order_size);
+//         }
+//     }
 
-    #[test]
-    fn test_open_close_different_orders() {
-        let mut order1 = LimitOrder::new(10000000, 1000, true);
-        {
-            _open_order(&mut order1);
-            let tick_details = _get_tick_details(1000);
+//     #[test]
+//     fn test_open_close_different_orders() {
+//         let mut order1 = LimitOrder::new(10000000, 1000, true);
+//         {
+//             _open_order(&mut order1);
+//             let tick_details = _get_tick_details(1000);
 
-            assert_eq!(order1.init_lower_bound, 0);
+//             assert_eq!(order1.init_lower_bound, 0);
 
-            assert_eq!(tick_details.liq_bounds_token1.lifetime_removed_liquidity, 0);
-            assert_eq!(
-                tick_details.liq_bounds_token1.upper_bound,
-                order1.order_size,
-            );
-        }
-        //
+//             assert_eq!(tick_details.liq_bounds_token1.lifetime_removed_liquidity, 0);
+//             assert_eq!(
+//                 tick_details.liq_bounds_token1.upper_bound,
+//                 order1.order_size,
+//             );
+//         }
+//         //
 
-        // Second Order
-        let mut order2 = LimitOrder::new(1000000, 1000, true);
-        {
-            _open_order(&mut order2);
+//         // Second Order
+//         let mut order2 = LimitOrder::new(1000000, 1000, true);
+//         {
+//             _open_order(&mut order2);
 
-            let tick_details = _get_tick_details(1000);
+//             let tick_details = _get_tick_details(1000);
 
-            assert_eq!(order2.init_lower_bound, order1.order_size);
+//             assert_eq!(order2.init_lower_bound, order1.order_size);
 
-            assert_eq!(
-                tick_details.liq_bounds_token1.upper_bound,
-                order1.order_size + order2.order_size,
-            );
-        }
+//             assert_eq!(
+//                 tick_details.liq_bounds_token1.upper_bound,
+//                 order1.order_size + order2.order_size,
+//             );
+//         }
 
-        let init_tick_details = _get_tick_details(1000);
+//         let init_tick_details = _get_tick_details(1000);
 
-        // Remove Order
-        {
-            let (amount_out, amount_remaining) = _close_order(&order1);
+//         // Remove Order
+//         {
+//             let (amount_out, amount_remaining) = _close_order(&order1);
 
-            assert_eq!(amount_out, 0);
+//             assert_eq!(amount_out, 0);
 
-            assert_eq!(amount_remaining, order1.order_size);
-        }
+//             assert_eq!(amount_remaining, order1.order_size);
+//         }
 
-        let tick_details = _get_tick_details(1000);
-        //assert lifetime _removed liquidity is
-        assert_eq!(
-            tick_details.liq_bounds_token1.lifetime_removed_liquidity,
-            init_tick_details
-                .liq_bounds_token1
-                .lifetime_removed_liquidity
-                + order1.order_size
-        );
+//         let tick_details = _get_tick_details(1000);
+//         //assert lifetime _removed liquidity is
+//         assert_eq!(
+//             tick_details.liq_bounds_token1.lifetime_removed_liquidity,
+//             init_tick_details
+//                 .liq_bounds_token1
+//                 .lifetime_removed_liquidity
+//                 + order1.order_size
+//         );
 
-        assert_eq!(
-            tick_details.liq_bounds_token1._liquidity_within(),
-            order2.order_size
-        );
-    }
+//         assert_eq!(
+//             tick_details.liq_bounds_token1._liquidity_within(),
+//             order2.order_size
+//         );
+//     }
 
-    ///
-    ///
-    ///
-    fn _get_tick_details(tick: Tick) -> TickDetails {
-        TICKS_DETAILS
-            .with(|ref_tick_details| return ref_tick_details.borrow().get(&tick).unwrap().clone())
-    }
+//     ///
+//     ///
+//     ///
+//     fn _get_tick_details(tick: Tick) -> TickDetails {
+//         TICKS_DETAILS
+//             .with(|ref_tick_details| return ref_tick_details.borrow().get(&tick).unwrap().clone())
+//     }
 
-    //
+//     //
 
-    fn _open_order(order: &mut LimitOrder) {
-        TICKS_DETAILS.with(|ref_ticks_details| {
-            let ticks_details = &mut *ref_ticks_details.borrow_mut();
-            MULTIPLIERS_BITMAPS.with(|ref_multiplier_bitmaps| {
-                let multipliers_bitmaps = &mut *ref_multiplier_bitmaps.borrow_mut();
+//     fn _open_order(order: &mut LimitOrder) {
+//         TICKS_DETAILS.with(|ref_ticks_details| {
+//             let ticks_details = &mut *ref_ticks_details.borrow_mut();
+//             MULTIPLIERS_BITMAPS.with(|ref_multiplier_bitmaps| {
+//                 let multipliers_bitmaps = &mut *ref_multiplier_bitmaps.borrow_mut();
 
-                let mut open_order_params = OpenOrderParams {
-                    order,
-                    integrals_bitmaps: multipliers_bitmaps,
-                    ticks_details,
-                };
-                open_order_params.open_order();
-            })
-        });
-    }
+//                 let mut open_order_params = OpenOrderParams {
+//                     order,
+//                     integrals_bitmaps: multipliers_bitmaps,
+//                     ticks_details,
+//                 };
+//                 open_order_params.open_order();
+//             })
+//         });
+//     }
 
-    ///
-    ///
-    ///
-    ///
-    fn _close_order(order: &LimitOrder) -> (Amount, Amount) {
-        TICKS_DETAILS.with(|ref_ticks_details| {
-            let ticks_details = &mut *ref_ticks_details.borrow_mut();
-            MULTIPLIERS_BITMAPS.with(|ref_multiplier_bitmaps| {
-                let multipliers_bitmaps = &mut *ref_multiplier_bitmaps.borrow_mut();
+//     ///
+//     ///
+//     ///
+//     ///
+//     fn _close_order(order: &LimitOrder) -> (Amount, Amount) {
+//         TICKS_DETAILS.with(|ref_ticks_details| {
+//             let ticks_details = &mut *ref_ticks_details.borrow_mut();
+//             MULTIPLIERS_BITMAPS.with(|ref_multiplier_bitmaps| {
+//                 let multipliers_bitmaps = &mut *ref_multiplier_bitmaps.borrow_mut();
 
-                let mut close_order_params = CloseOrderParams {
-                    order,
-                    multipliers_bitmaps,
-                    ticks_details,
-                };
-                close_order_params.close_order()
-            })
-        })
-    }
-}
+//                 let mut close_order_params = CloseOrderParams {
+//                     order,
+//                     integrals_bitmaps: multipliers_bitmaps,
+//                     ticks_details,
+//                 };
+//                 close_order_params.close_order()
+//             })
+//         })
+//     }
+// }

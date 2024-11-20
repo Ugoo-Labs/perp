@@ -185,7 +185,10 @@ impl FundingRateTracker {
 }
 
 impl Storable for FundingRateTracker {
-    const BOUND: Bound = Bound::Unbounded;
+    const BOUND: Bound = Bound::Bounded {
+        max_size: 65,
+        is_fixed_size: true,
+    };
     fn from_bytes(bytes: Cow<[u8]>) -> Self {
         Decode!(bytes.as_ref(), Self).unwrap()
     }
@@ -281,7 +284,10 @@ pub struct StateDetails {
 }
 
 impl Storable for StateDetails {
-    const BOUND: Bound = Bound::Unbounded;
+    const BOUND: Bound = Bound::Bounded {
+        max_size: 29,
+        is_fixed_size: false,
+    };
     fn from_bytes(bytes: Cow<[u8]>) -> Self {
         Decode!(bytes.as_ref(), Self).unwrap()
     }
@@ -331,6 +337,20 @@ impl TickDetails {
         } else {
             self.liq_bounds_token0._remove_liquidity(amount_out);
         }
+    }
+}
+
+impl Storable for TickDetails {
+    const BOUND: Bound = Bound::Bounded {
+        max_size: 104,
+        is_fixed_size: true,
+    };
+    fn from_bytes(bytes: Cow<[u8]>) -> Self {
+        Decode!(bytes.as_ref(), Self).unwrap()
+    }
+
+    fn to_bytes(&self) -> Cow<[u8]> {
+        Cow::Owned(Encode!(self).unwrap())
     }
 }
 

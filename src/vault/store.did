@@ -1,0 +1,12 @@
+type Position = record {
+  debt : nat;
+  interest_rate : nat32;
+  amount_in : nat;
+  time_stamp : nat64;
+};
+service : (principal) -> {
+  getUserPosition : (principal) -> (Position) query;
+  putPosition : (principal, Position) -> ();
+  removePosition : (principal) -> ();
+  userHasPosition : (principal) -> (bool) query;
+}

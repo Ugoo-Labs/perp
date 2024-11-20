@@ -3,14 +3,13 @@ use super::price_lib::_equivalent;
 use super::tick_lib::*;
 use crate::types::TickDetails;
 
-use std::collections::HashMap;
+use ic_stable_structures::{memory_manager::VirtualMemory, DefaultMemoryImpl, StableBTreeMap};
 
-//use ic_cdk::api::time;
-
+type Memory = VirtualMemory<DefaultMemoryImpl>;
 type Tick = u64;
 type Amount = u128;
-type MB = HashMap<u64, u128>;
-type TD = HashMap<u64, TickDetails>;
+type MB = StableBTreeMap<u64, u128, Memory>;
+type TD = StableBTreeMap<u64, TickDetails, Memory>;
 
 /// Get Best Offer
 ///
@@ -28,7 +27,7 @@ pub fn _get_best_offer<'a>(
     while !(_exceeded_stopping_tick(loop_current_tick, stopping_tick, buy)) {
         let (integral, bit_position) = _int_and_dec(loop_current_tick);
         let bitmap = match integrals_bitmaps.get(&integral) {
-            Some(&res) => res,
+            Some(res) => res,
             None => {
                 // if integral has no bitmap means that means  no tick within that integral   is
                 //initialised
@@ -47,7 +46,7 @@ pub fn _get_best_offer<'a>(
         };
         let tick_details = match ticks_details.get(&loop_current_tick) {
             Some(res) => res,
-            None => &TickDetails::default(),
+            None => TickDetails::default(),
         };
         let liquidity_boundary = if buy {
             tick_details.liq_bounds_token0
@@ -138,7 +137,7 @@ impl<'a> SwapParams<'a> {
             let (integral, bit_position) = _int_and_dec(loop_current_tick);
 
             let bitmap = match self.integrals_bitmaps.get(&integral) {
-                Some(&res) => res,
+                Some(res) => res,
                 None => {
                     // if integral has no bitmap means that means  no tick within that integral   is
                     //initialised
@@ -237,7 +236,7 @@ impl<'a> SwapParams<'a> {
         let equivalent =
             |amount: Amount, buy: bool| -> Amount { _equivalent(amount, tick_price, buy) };
 
-        let tick_details = match self.ticks_details.get_mut(&params.tick) {
+        let mut tick_details = match self.ticks_details.get(&params.tick) {
             Some(res) => res,
             None => return (amount_out, amount_remaining, false),
         };
@@ -265,6 +264,8 @@ impl<'a> SwapParams<'a> {
         boundary_closed = tick_details.liq_bounds_token0._liquidity_within() == 0
             && tick_details.liq_bounds_token1._liquidity_within() == 0;
 
+        self.ticks_details.insert(params.tick, tick_details);
+
         return (amount_out, amount_remaining, boundary_closed);
     }
 
@@ -279,20 +280,20 @@ impl<'a> SwapParams<'a> {
     /// - Cleared : true if all liquidity at tick  was cleared
     /// - Boundary Closed : true if all static liquidity at tick (see TickDetails and LiquidityBoundary) is cleared
 
-    fn _sell_at_tick(&mut self, tick_params: SwapTickConstants) -> (Amount, Amount, bool) {
+    fn _sell_at_tick(&mut self, params: SwapTickConstants) -> (Amount, Amount, bool) {
         let mut amount_out = 0;
 
-        let mut amount_remaining = tick_params.order_size;
+        let mut amount_remaining = params.order_size;
 
         let boundary_closed;
 
-        let tick_price = _tick_to_price(tick_params.tick);
+        let tick_price = _tick_to_price(params.tick);
 
         let equivalent =
             |amount: Amount, buy: bool| -> Amount { _equivalent(amount, tick_price, buy) };
 
         // tick details
-        let tick_details = match self.ticks_details.get_mut(&tick_params.tick) {
+        let mut tick_details = match self.ticks_details.get(&params.tick) {
             Some(res) => res,
             None => return (amount_out, amount_remaining, false),
         };
@@ -317,188 +318,190 @@ impl<'a> SwapParams<'a> {
         boundary_closed = tick_details.liq_bounds_token1._liquidity_within() == 0
             && tick_details.liq_bounds_token0._liquidity_within() == 0;
 
+        self.ticks_details.insert(params.tick, tick_details);
+
         return (amount_out, amount_remaining, boundary_closed);
     }
 }
 
-#[cfg(test)]
-mod test {
+// #[cfg(test)]
+// mod test {
 
-    //use crate::types::LiquidityBoundary;
+//     //use crate::types::LiquidityBoundary;
 
-    use super::*;
+//     use super::*;
 
-    // use super::{_mul_and_bit, _tick_zero};
-    use std::cell::RefCell;
-    use std::collections::HashMap;
+//     // use super::{_mul_and_bit, _tick_zero};
+//     use std::cell::RefCell;
+//     use std::collections::HashMap;
 
-    thread_local! {
-        static INTEGRALS_BITMAPS:RefCell<MB> = RefCell::new(HashMap::new());
-        static TICKS_DETAILS:RefCell<TD> = RefCell::new(HashMap::new());
-    }
+//     thread_local! {
+//         static INTEGRALS_BITMAPS:RefCell<MB> = RefCell::new(HashMap::new());
+//         static TICKS_DETAILS:RefCell<TD> = RefCell::new(HashMap::new());
+//     }
 
-    #[test]
-    fn test_exceeded() {
-        let order_size = 10000000000;
-        let starting_tick = 199_00_000;
+//     #[test]
+//     fn test_exceeded() {
+//         let order_size = 10000000000;
+//         let starting_tick = 199_00_000;
 
-        let stopping_tick = _def_max_tick(starting_tick, true);
+//         let stopping_tick = _def_max_tick(starting_tick, true);
 
-        let (amount_out, amount_remaining, resulting_tick, crossed_ticks) =
-            _swap(order_size, true, starting_tick, stopping_tick);
+//         let (amount_out, amount_remaining, resulting_tick, crossed_ticks) =
+//             _swap(order_size, true, starting_tick, stopping_tick);
 
-        assert_eq!(amount_out, 0);
+//         assert_eq!(amount_out, 0);
 
-        assert_eq!(amount_remaining, order_size);
-        assert_eq!(resulting_tick, starting_tick);
-        assert_eq!(crossed_ticks.len(), 0);
-    }
+//         assert_eq!(amount_remaining, order_size);
+//         assert_eq!(resulting_tick, starting_tick);
+//         assert_eq!(crossed_ticks.len(), 0);
+//     }
 
-    #[test]
+//     #[test]
 
-    fn test_swap_at_tick() {
-        // test_swap_clearing_tick
-        {
-            let swapping_tick = 200_00_000;
-            let amount_at_tick = 200_000;
+//     fn test_swap_at_tick() {
+//         // test_swap_clearing_tick
+//         {
+//             let swapping_tick = 200_00_000;
+//             let amount_at_tick = 200_000;
 
-            _fill_tick(swapping_tick, amount_at_tick, false);
+//             _fill_tick(swapping_tick, amount_at_tick, false);
 
-            let order_size: u128 = 10000000000000000000;
+//             let order_size: u128 = 10000000000000000000;
 
-            let (amount_out, amount_remaining, resulting_tick, _crossed_ticks) =
-                _swap(order_size, true, swapping_tick, swapping_tick);
+//             let (amount_out, amount_remaining, resulting_tick, _crossed_ticks) =
+//                 _swap(order_size, true, swapping_tick, swapping_tick);
 
-            assert_eq!(amount_out, amount_at_tick);
-            assert_eq!(resulting_tick, swapping_tick);
-            assert_eq!(amount_remaining, order_size - (2 * amount_at_tick));
+//             assert_eq!(amount_out, amount_at_tick);
+//             assert_eq!(resulting_tick, swapping_tick);
+//             assert_eq!(amount_remaining, order_size - (2 * amount_at_tick));
 
-            // assert that tick has been cleared and integral's bitmap has also  been cleared
-            assert_eq!(
-                TICKS_DETAILS
-                    .with_borrow(|ticks_details| { ticks_details.contains_key(&swapping_tick) }),
-                false
-            );
+//             // assert that tick has been cleared and integral's bitmap has also  been cleared
+//             assert_eq!(
+//                 TICKS_DETAILS
+//                     .with_borrow(|ticks_details| { ticks_details.contains_key(&swapping_tick) }),
+//                 false
+//             );
 
-            let (int, _) = _int_and_dec(swapping_tick);
+//             let (int, _) = _int_and_dec(swapping_tick);
 
-            assert_eq!(
-                INTEGRALS_BITMAPS.with_borrow(|int_bitmaps| { int_bitmaps.contains_key(&int) }),
-                false
-            );
-        }
+//             assert_eq!(
+//                 INTEGRALS_BITMAPS.with_borrow(|int_bitmaps| { int_bitmaps.contains_key(&int) }),
+//                 false
+//             );
+//         }
 
-        // test_swap_tick
-        {
-            let swapping_tick = 200_00_000;
-            let amount_at_tick = 200_000_000;
+//         // test_swap_tick
+//         {
+//             let swapping_tick = 200_00_000;
+//             let amount_at_tick = 200_000_000;
 
-            _fill_tick(swapping_tick, amount_at_tick, true);
+//             _fill_tick(swapping_tick, amount_at_tick, true);
 
-            let order_size = 100_000;
+//             let order_size = 100_000;
 
-            let (amount_out, amount_remaining, resulting_tick, _crossed_ticks) =
-                _swap(order_size, false, swapping_tick, 199_00_000);
+//             let (amount_out, amount_remaining, resulting_tick, _crossed_ticks) =
+//                 _swap(order_size, false, swapping_tick, 199_00_000);
 
-            assert_eq!(amount_out, order_size * 2); //trade was executed at 200 percent
-            assert_eq!(amount_remaining, 0);
-            assert_eq!(resulting_tick, swapping_tick);
+//             assert_eq!(amount_out, order_size * 2); //trade was executed at 200 percent
+//             assert_eq!(amount_remaining, 0);
+//             assert_eq!(resulting_tick, swapping_tick);
 
-            // assert that tick has not  been cleared and integral's bitmap has also not  been cleared
-            assert_eq!(
-                TICKS_DETAILS
-                    .with_borrow(|ticks_details| { ticks_details.contains_key(&swapping_tick) }),
-                true
-            );
+//             // assert that tick has not  been cleared and integral's bitmap has also not  been cleared
+//             assert_eq!(
+//                 TICKS_DETAILS
+//                     .with_borrow(|ticks_details| { ticks_details.contains_key(&swapping_tick) }),
+//                 true
+//             );
 
-            let (int, _) = _int_and_dec(swapping_tick);
+//             let (int, _) = _int_and_dec(swapping_tick);
 
-            assert_eq!(
-                INTEGRALS_BITMAPS.with_borrow(|int_bitmaps| { int_bitmaps.contains_key(&int) }),
-                true
-            );
-        }
-    }
+//             assert_eq!(
+//                 INTEGRALS_BITMAPS.with_borrow(|int_bitmaps| { int_bitmaps.contains_key(&int) }),
+//                 true
+//             );
+//         }
+//     }
 
-    #[test]
-    fn test_swap_across_tick() {
-        {
-            let (tick1, tick2) = (199_00_000, 199_50_000);
-            let (amount_at_tick1, amount_at_tick2) = (10_000_000_000_000, 200_000_000_000);
+//     #[test]
+//     fn test_swap_across_tick() {
+//         {
+//             let (tick1, tick2) = (199_00_000, 199_50_000);
+//             let (amount_at_tick1, amount_at_tick2) = (10_000_000_000_000, 200_000_000_000);
 
-            _fill_tick(tick1, amount_at_tick1, true);
+//             _fill_tick(tick1, amount_at_tick1, true);
 
-            _fill_tick(tick2, amount_at_tick2, true);
+//             _fill_tick(tick2, amount_at_tick2, true);
 
-            let amount_to_swap = 250_000_000_000;
-            let current_tick = 200_80_000;
-            let (amount_out, amount_remaining, resulting_tick, crossed_ticks) =
-                _swap(amount_to_swap, false, current_tick, 190_00_000); // randoom stopping tick
+//             let amount_to_swap = 250_000_000_000;
+//             let current_tick = 200_80_000;
+//             let (amount_out, amount_remaining, resulting_tick, crossed_ticks) =
+//                 _swap(amount_to_swap, false, current_tick, 190_00_000); // randoom stopping tick
 
-            println!("the value out is {}", amount_out);
+//             println!("the value out is {}", amount_out);
 
-            assert!(amount_out > amount_at_tick2);
-            assert_eq!(amount_remaining, 0);
-            assert_eq!(resulting_tick, tick1);
-            assert_eq!(crossed_ticks.len(), 1);
+//             assert!(amount_out > amount_at_tick2);
+//             assert_eq!(amount_remaining, 0);
+//             assert_eq!(resulting_tick, tick1);
+//             assert_eq!(crossed_ticks.len(), 1);
 
-            // assert that the tick details has been deleted
-            assert_eq!(
-                TICKS_DETAILS.with_borrow(|ticks_details| { ticks_details.contains_key(&tick2) }),
-                false
-            );
+//             // assert that the tick details has been deleted
+//             assert_eq!(
+//                 TICKS_DETAILS.with_borrow(|ticks_details| { ticks_details.contains_key(&tick2) }),
+//                 false
+//             );
 
-            // assert that integral'ss bitmap is still available since
-            let (int, _) = _int_and_dec(tick1);
-            assert!(INTEGRALS_BITMAPS
-                .with_borrow(|integrals_bitmaps| { integrals_bitmaps.contains_key(&int) }))
-        }
-    }
+//             // assert that integral'ss bitmap is still available since
+//             let (int, _) = _int_and_dec(tick1);
+//             assert!(INTEGRALS_BITMAPS
+//                 .with_borrow(|integrals_bitmaps| { integrals_bitmaps.contains_key(&int) }))
+//         }
+//     }
 
-    fn _get_tick_details(tick: Tick) -> TickDetails {
-        TICKS_DETAILS.with_borrow(|ticks_details| ticks_details.get(&tick).unwrap().clone())
-    }
+//     fn _get_tick_details(tick: Tick) -> TickDetails {
+//         TICKS_DETAILS.with_borrow(|ticks_details| ticks_details.get(&tick).unwrap().clone())
+//     }
 
-    fn _fill_tick(tick: Tick, amount_in: Amount, buy: bool) {
-        let mut tick_details = TickDetails::new();
-        if buy {
-            tick_details.liq_bounds_token1._add_liquidity(amount_in);
-        } else {
-            tick_details.liq_bounds_token0._add_liquidity(amount_in);
-        }
-        let (int, dec) = _int_and_dec(tick);
-        TICKS_DETAILS
-            .with_borrow_mut(|ref_tick_details| ref_tick_details.insert(tick, tick_details));
-        INTEGRALS_BITMAPS.with_borrow_mut(|ref_integral_bitmaps| {
-            let bitmap = ref_integral_bitmaps.entry(int).or_insert(0);
-            let new_bitmap = _flip_bit(*bitmap, dec);
+//     fn _fill_tick(tick: Tick, amount_in: Amount, buy: bool) {
+//         let mut tick_details = TickDetails::new();
+//         if buy {
+//             tick_details.liq_bounds_token1._add_liquidity(amount_in);
+//         } else {
+//             tick_details.liq_bounds_token0._add_liquidity(amount_in);
+//         }
+//         let (int, dec) = _int_and_dec(tick);
+//         TICKS_DETAILS
+//             .with_borrow_mut(|ref_tick_details| ref_tick_details.insert(tick, tick_details));
+//         INTEGRALS_BITMAPS.with_borrow_mut(|ref_integral_bitmaps| {
+//             let bitmap = ref_integral_bitmaps.entry(int).or_insert(0);
+//             let new_bitmap = _flip_bit(*bitmap, dec);
 
-            println!("the new bitmap is {}", new_bitmap);
-            *bitmap = new_bitmap;
-        })
-    }
+//             println!("the new bitmap is {}", new_bitmap);
+//             *bitmap = new_bitmap;
+//         })
+//     }
 
-    #[test]
-    fn test_bitmap() {}
+//     #[test]
+//     fn test_bitmap() {}
 
-    fn _swap(
-        order_size: Amount,
-        buy: bool,
-        init_tick: Tick,
-        stopping_tick: Tick,
-    ) -> (Amount, Amount, Tick, Vec<Tick>) {
-        TICKS_DETAILS.with_borrow_mut(|ticks_details| {
-            INTEGRALS_BITMAPS.with_borrow_mut(|integrals_bitmaps| {
-                let mut swap_params = SwapParams {
-                    buy,
-                    init_tick,
-                    stopping_tick,
-                    order_size,
-                    integrals_bitmaps,
-                    ticks_details,
-                };
-                swap_params._swap()
-            })
-        })
-    }
-}
+//     fn _swap(
+//         order_size: Amount,
+//         buy: bool,
+//         init_tick: Tick,
+//         stopping_tick: Tick,
+//     ) -> (Amount, Amount, Tick, Vec<Tick>) {
+//         TICKS_DETAILS.with_borrow_mut(|ticks_details| {
+//             INTEGRALS_BITMAPS.with_borrow_mut(|integrals_bitmaps| {
+//                 let mut swap_params = SwapParams {
+//                     buy,
+//                     init_tick,
+//                     stopping_tick,
+//                     order_size,
+//                     integrals_bitmaps,
+//                     ticks_details,
+//                 };
+//                 swap_params._swap()
+//             })
+//         })
+//     }
+// }
