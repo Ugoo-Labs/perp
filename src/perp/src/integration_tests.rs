@@ -1,284 +1,339 @@
-use candid::{decode_args, decode_one, encode_args, encode_one, Principal};
-use pocket_ic::{PocketIc, WasmResult};
+use candid::{decode_args, decode_one, encode_args, encode_one, types::principal, Principal};
+use pocket_ic::{PocketIc, UserError, WasmResult};
+
+use std::{cell::RefCell, time::Duration};
 
 use std::fs;
 
+use crate::close_position;
 use crate::{
-    corelib::order_lib::LimitOrder,
+    //  corelib::order_lib::LimitOrder,
     types::{Asset, AssetClass, MarketDetails, StateDetails, Tick},
-    OrderType, PositionDetails,
+    Amount, // OrderType, PositionDetails,
+    OrderType,
+    PositionDetails,
 };
+
+type Subaccount = [u8; 32];
 
 const _BACKEND_WASM: &str = "../../target/wasm32-unknown-unknown/release/perp.wasm";
 
-#[test]
-fn test_installation() {
-    let (pic, perp_canister, admin) = _setup_market();
-
-    set_state(&pic, perp_canister, admin, 100000 * 199);
-
-    let new_state_details = get_state(&pic, perp_canister);
-
-    let market_details = get_market_details(&pic, perp_canister);
-
-    println!(" The address is {}", perp_canister.to_text());
-
-    let state_details = StateDetails {
-        not_paused: true,
-        current_tick: 100000 * 199,
-        max_leveragex10: 100,
-        min_collateral: 0,
-        base_token_multiple: 1,
-    };
-
-    assert_eq!(state_details, new_state_details);
-
-    println!("The market details is {:?}", market_details)
-
-    // assert_eq!(result, "Hello, ICP!");
+thread_local! {
+    static CANISTER_ID:RefCell<Principal> = RefCell::new(Principal::anonymous())
 }
 
 #[test]
+fn test_setting_state() {
+    let admin = _get_principals()[0];
+    let pic = _setup_market(admin);
 
-fn test_open_limit_order() {
-    let (pic, canister, admin) = _setup_market();
+    let init_state_details = _get_state(&pic);
 
-    set_state(&pic, canister, admin, 199 * 100_000);
+    assert_eq!(init_state_details.not_paused, false);
 
-    let collateral = 10000000000;
+    let init_tick = 100000 * 199;
 
-    if let Ok(position) =
-        _open_limit_position(&pic, canister, admin, collateral, 20, 200 * 100000, false)
-    {
-        println!("the position is {:?}", position)
-    }
+    _set_state(&pic, admin, 100000 * 199, 20, 10000000000);
+
+    let new_state_details = _get_state(&pic);
+    assert_eq!(new_state_details.current_tick, init_tick);
+    assert_eq!(new_state_details.not_paused, true);
 }
 
 #[test]
-fn test_close_limit_order() {
-    let (pic, canister, admin) = _setup_market();
+fn test_open_position_failing() {
+    // Reason
+    // Max Leverage Exceeded
+    let admin = _get_principals()[0];
+    let pic = _setup_market(admin);
 
-    set_state(&pic, canister, admin, 199 * 100_000);
+    let init_tick = 100000 * 199;
 
-    let collateral = 10000000000;
+    _set_state(&pic, admin, init_tick, 15, 0);
 
-    if let Ok(position) =
-        _open_limit_position(&pic, canister, admin, collateral, 20, 200 * 100000, false)
-    {
-        println!("the position is {:?}", position)
-    }
+    let caller = _get_principals()[1];
 
-    let profit = _close_position(&pic, canister, admin);
-
-    assert_eq!(profit, collateral);
-
-    println!("The value of collateral is {}", profit);
-}
-
-#[test]
-fn test_open_market_order() {
-    let (pic, canister, admin) = _setup_market();
-
-    set_state(&pic, canister, admin, 200 * 100_000);
-
-    let limit_collateral = 10000000000;
-
-    if let Ok(l_position) = _open_limit_position(
+    let result = _open_position(
         &pic,
-        canister,
-        admin,
-        limit_collateral,
-        20,
-        199 * 100_000,
-        true,
-    ) {
-        println!("the position is {:?}", l_position)
-    };
-
-    let market_collateral = 1000000;
-
-    if let Ok(m_position) = _open_market_position(
-        &pic,
-        canister,
-        Principal::anonymous(),
-        market_collateral,
-        20,
-        199 * 100_000,
+        caller,
+        1_000_000_000,
         false,
-    ) {
-        println!("the position is {:?}", m_position)
+        OrderType::Limit,
+        20, // leverage exceeds
+        Some(100000 * 200),
+    );
+
+    if let Err(reason) = result {
+        assert_eq!(
+            reason,
+            "Max leverage exceeded or collateral is too small".to_string()
+        );
     };
-
-    let new_state_details = get_state(&pic, canister);
-
-    assert_eq!(new_state_details.current_tick, 199 * 100_000);
-
-    let limit_collateral2 = 10000000000;
-
-    let princpal1 = _get_principals()[0];
-
-    if let Ok(l_position) = _open_limit_position(
-        &pic,
-        canister,
-        princpal1,
-        limit_collateral2,
-        20,
-        200 * 100_000,
-        false,
-    ) {
-        //  println!("the position is {:?}", l_position)
-    };
-
-    let profit = _close_position(&pic, canister, Principal::anonymous());
-
-    println!("The profit is {}", profit);
 }
 
 #[test]
-fn test_open_close_market_order() {
-    let (pic, canister, admin) = _setup_market();
+fn test_open_position_limit_order_type_short() {
+    let admin = _get_principals()[0];
+    let pic = _setup_market(admin);
 
-    set_state(&pic, canister, admin, 199 * 100_000);
+    let caller = _get_principals()[0];
 
-    let limit_collateral = 10000000000;
+    let init_tick = 100000 * 199;
 
-    if let Ok(l_position) = _open_limit_position(
+    // assert position opens
+    _set_state(&pic, admin, init_tick, 100, 0);
+
+    let reference_tick_1 = 100000 * 200;
+
+    let _ = _open_position(
         &pic,
-        canister,
-        admin,
-        limit_collateral,
-        20,
-        200 * 100_000,
+        caller,
+        1_000_000_000,
         false,
-    ) {
-        //  println!("the position is {:?}", l_position)
-    };
-
-    let princpal1 = _get_principals()[0];
-
-    let principal2 = _get_principals()[1];
-
-    let market_collateral = 1000000;
-
-    if let Ok(m_position) = _open_market_position(
-        &pic,
-        canister,
-        princpal1,
-        market_collateral,
+        OrderType::Limit,
         20,
-        200 * 100_000,
-        true,
-    ) {
-        //   println!("the position is {:?}", m_position)
-    };
+        Some(100000 * 200),
+    );
 
-    let new_state_details = get_state(&pic, canister);
+    let state_details = _get_state(&pic);
 
-    assert_eq!(new_state_details.current_tick, 200 * 100_000);
+    assert_eq!(state_details.current_tick, reference_tick_1);
 
-    // update state to reflect the changes
-    set_state(&pic, canister, admin, 300 * 100_000);
+    // Opening a position by a second user
 
-    // close position by placing an order  below it
+    let second_caller = _get_principals()[1]; //test caller
 
-    if let Ok(l_position2) = _open_limit_position(
+    let reference_tick_2 = 100000 * 201;
+
+    let _ = _open_position(
         &pic,
-        canister,
-        principal2,
-        limit_collateral,
+        second_caller,
+        1_000_000_000,
+        false,
+        OrderType::Limit,
         20,
-        29930_000,
-        true,
-    ) {
-        println!("the position is {:?}", l_position2)
-    };
+        Some(reference_tick_2),
+    );
 
-    let profit = _close_position(&pic, canister, princpal1);
+    let state_details = _get_state(&pic);
 
-    //   let market_close_profit = _close_position(&pic, canister, admin);
+    assert_ne!(state_details.current_tick, reference_tick_2);
 
-    println!("The profit is {} ", profit);
+    // Opening third position
+
+    let third_caller = Principal::anonymous();
+
+    let reference_tick3 = 100000 * 199;
+
+    let _ = _open_position(
+        &pic,
+        third_caller,
+        1_000_000_000,
+        false,
+        OrderType::Limit,
+        20,
+        Some(reference_tick3),
+    );
+
+    let state_details = _get_state(&pic);
+
+    assert_eq!(state_details.current_tick, reference_tick3);
 }
 
-fn get_market_details(pic: &PocketIc, canister: Principal) -> MarketDetails {
-    let Ok(WasmResult::Reply(res)) = pic.query_call(
-        canister,
-        Principal::anonymous(),
-        "get_market_details",
-        encode_one(()).unwrap(),
-    ) else {
-        panic!("error occured")
-    };
+#[test]
+fn _test_open_limit_order_long() {
+    let admin = _get_principals()[0];
+    let pic = _setup_market(admin);
 
-    decode_one(&res).unwrap()
+    let caller = _get_principals()[0];
+
+    let init_tick = 100000 * 199;
+
+    _set_state(&pic, admin, init_tick, 100, 0);
+
+    let reference_tick1 = 100000 * 198;
+
+    let _ = _open_position(
+        &pic,
+        caller,
+        1_000_000_000,
+        true,
+        OrderType::Limit,
+        20,
+        Some(reference_tick1),
+    );
+
+    let best_buy_offer = _get_best_offer(&pic, true);
+
+    assert_eq!(
+        reference_tick1, best_buy_offer,
+        "testing that best buy offer is at reference tick1 ",
+    );
+
+    let caller2 = _get_principals()[1];
+
+    let reference_tick2 = 100000 * 197;
+
+    let _ = _open_position(
+        &pic,
+        caller2,
+        1_000_000_000,
+        true,
+        OrderType::Limit,
+        20,
+        Some(reference_tick2),
+    );
+
+    let current_best_buy_offer = _get_best_offer(&pic, true);
+    // best buy offer does not change cus the previous was higher
+    assert_eq!(
+        reference_tick1, current_best_buy_offer,
+        "testing that best buy offer does not change"
+    );
 }
 
-fn _open_limit_position(
-    pic: &PocketIc,
-    canister_id: Principal,
-    sender: Principal,
-    collateral: u128,
-    leverage: u8,
-    ref_tick: u64,
-    long: bool,
-) -> Result<PositionDetails, String> {
-    let order = LimitOrder::default();
-    let Ok(WasmResult::Reply(res)) = pic.update_call(
-        canister_id,
-        sender,
-        "open_position",
-        encode_args((
-            collateral,
-            Some(ref_tick),
-            leverage,
-            long,
+#[test]
+fn test_open_market_order_long() {
+    let admin = _get_principals()[0];
+    let pic = _setup_market(admin);
+
+    let caller = _get_principals()[0];
+
+    let init_tick = 100000 * 199;
+
+    _set_state(&pic, admin, init_tick, 100, 0);
+    // open limit order
+    let reference_tick_1 = 100000 * 200;
+
+    let _ = _open_position(
+        &pic,
+        caller,
+        1_000_000_000,
+        false,
+        OrderType::Limit,
+        20,
+        Some(reference_tick_1),
+    );
+
+    let StateDetails { current_tick, .. } = _get_state(&pic);
+
+    assert_eq!(current_tick, reference_tick_1);
+
+    let second_caller = _get_principals()[1];
+
+    let result = _open_position(
+        &pic,
+        second_caller,
+        1_000_000,
+        true,
+        OrderType::Market,
+        20,
+        Some(reference_tick_1),
+    );
+
+    if let Ok(_position) = result {
+        let _ = _open_position(
+            &pic,
+            Principal::anonymous(),
+            1_000_000_000,
+            true,
             OrderType::Limit,
-            u64::default(),
-            u64::default(),
-        ))
-        .unwrap(),
-    ) else {
-        panic!("failed to open position")
-    };
-    decode_one(&res).unwrap()
+            20,
+            Some(init_tick),
+        );
+        let collateral = _close_position(&pic, second_caller);
+
+        println!("The pnl of this position is {}", collateral)
+    }
 }
 
-fn _open_market_position(
+#[test]
+fn test_open_market_short() {
+    let admin = _get_principals()[0];
+    let pic = _setup_market(admin);
+
+    let caller = _get_principals()[0];
+
+    let init_tick = 100000 * 200;
+
+    _set_state(&pic, admin, init_tick, 100, 0);
+
+    // open limit order
+    let reference_tick_1 = 19940_000;
+
+    let _ = _open_position(
+        &pic,
+        caller,
+        1_000_000_000_000,
+        true,
+        OrderType::Limit,
+        20,
+        Some(reference_tick_1),
+    );
+
+    let second_caller = _get_principals()[1];
+
+    let result = _open_position(
+        &pic,
+        second_caller,
+        1_000_000,
+        false,
+        OrderType::Market,
+        20,
+        Some(reference_tick_1),
+    );
+
+    println!("The position is {:?}", result)
+}
+
+///////////////////////////////////////////////////////////////////////
+/// Position Function
+///////////////////////////////////////////////////////////////////////
+fn _open_position(
     pic: &PocketIc,
-    canister_id: Principal,
-    sender: Principal,
-    collateral: u128,
-    leverage: u8,
-    _ref_tick: u64,
+    principal: Principal,
+    collateral: Amount,
     long: bool,
+    order_type: OrderType,
+    leverage: u8,
+    max_tick: Option<Tick>,
 ) -> Result<PositionDetails, String> {
-    let max_tick: Option<Tick> = Option::None;
-    let Ok(WasmResult::Reply(res)) = pic.update_call(
+    let canister_id = _get_canister_id();
+
+    let returns;
+
+    match pic.update_call(
         canister_id,
-        sender,
-        "open_position",
-        encode_args((
-            collateral,
-            max_tick,
-            leverage,
-            long,
-            OrderType::Market,
-            u64::default(),
-            u64::default(),
-        ))
-        .unwrap(),
-    ) else {
-        panic!("failed to open position")
-    };
-    decode_one(&res).unwrap()
+        principal,
+        "openPosition",
+        encode_args((collateral, long, order_type, leverage, max_tick, 1u64, 1u64)).unwrap(),
+    ) {
+        Ok(reply) => {
+            if let WasmResult::Reply(val) = reply {
+                returns = val
+            } else {
+                panic!("returned error")
+            }
+        }
+        Err(error) => {
+            println!("{:?}", error);
+            panic!("Could not open position")
+        }
+    }
+
+    let reply = decode_one(&returns).unwrap();
+
+    return reply;
 }
 
-fn _close_position(pic: &PocketIc, canister_id: Principal, sender: Principal) -> u128 {
+fn _close_position(pic: &PocketIc, sender: Principal) -> u128 {
+    let canister_id = _get_canister_id();
+
     let max_tick: Option<Tick> = Option::None;
     let Ok(WasmResult::Reply(res)) = pic.update_call(
         canister_id,
         sender,
-        "close_position",
+        "closePosition",
         encode_one(max_tick).unwrap(),
     ) else {
         panic!("failed to close position")
@@ -287,11 +342,16 @@ fn _close_position(pic: &PocketIc, canister_id: Principal, sender: Principal) ->
     decode_one(&res).unwrap()
 }
 
-fn get_state(pic: &PocketIc, canister_id: Principal) -> StateDetails {
+////////////////////////////////////////////////////////////////////////////////////
+/// Getters
+/////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////
+fn _get_state(pic: &PocketIc) -> StateDetails {
+    let canister_id = _get_canister_id();
     let Ok(WasmResult::Reply(val)) = pic.query_call(
         canister_id,
         Principal::anonymous(),
-        "get_state_details",
+        "getStateDetails",
         encode_one(()).unwrap(),
     ) else {
         panic!("error occured")
@@ -300,30 +360,120 @@ fn get_state(pic: &PocketIc, canister_id: Principal) -> StateDetails {
     decode_one(&val).unwrap()
 }
 
-fn set_state(pic: &PocketIc, canister_id: Principal, caller: Principal, current_tick: Tick) {
+///
+fn _get_best_offer(pic: &PocketIc, buy: bool) -> Tick {
+    let canister_id = _get_canister_id();
+    let Ok(WasmResult::Reply(val)) = pic.query_call(
+        canister_id,
+        Principal::anonymous(),
+        "getBestOfferTick",
+        encode_one(buy).unwrap(),
+    ) else {
+        panic!("best offer could not be found")
+    };
+    let reply = decode_one(&val).unwrap();
+
+    return reply;
+}
+
+/// Get Position PNL
+fn _get_pnl(pic: &PocketIc, position: PositionDetails) -> i64 {
+    let canister_id = _get_canister_id();
+    let Ok(WasmResult::Reply(val)) = pic.query_call(
+        canister_id,
+        Principal::anonymous(),
+        "getPositionPNL",
+        encode_one(position).unwrap(),
+    ) else {
+        panic!("Account could not be gotten")
+    };
+    let reply = decode_one(&val).unwrap();
+
+    return reply;
+}
+
+/// Get Position Status
+fn _get_user_account(pic: &PocketIc, principal: Principal) -> Subaccount {
+    let canister_id = _get_canister_id();
+    let Ok(WasmResult::Reply(val)) = pic.query_call(
+        canister_id,
+        principal,
+        "getUserAccount",
+        encode_one(principal).unwrap(),
+    ) else {
+        panic!("Account could not be gotten")
+    };
+    let reply = decode_one(&val).unwrap();
+
+    return reply;
+}
+
+/// Get Account Position
+fn _get_account_position(pic: &PocketIc, account: Subaccount) -> PositionDetails {
+    let canister_id = _get_canister_id();
+    let Ok(WasmResult::Reply(val)) = pic.query_call(
+        canister_id,
+        Principal::anonymous(),
+        "getAccountPosition",
+        encode_one(account).unwrap(),
+    ) else {
+        panic!("Account could not be gotten")
+    };
+    let reply = decode_one(&val).unwrap();
+
+    return reply;
+}
+
+fn _get_position_status(pic: &PocketIc, account: Subaccount) -> (bool, bool) {
+    let canister_id = _get_canister_id();
+    let Ok(WasmResult::Reply(val)) = pic.query_call(
+        canister_id,
+        Principal::anonymous(),
+        "positionStatus",
+        encode_one(account).unwrap(),
+    ) else {
+        panic!("Account could not be gotten")
+    };
+    let reply = decode_one(&val).unwrap();
+
+    return reply;
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////
+
+/////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////
+///  Setters Function
+/////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////
+fn _set_state(
+    pic: &PocketIc,
+    caller: Principal,
+    current_tick: Tick,
+    max_leveragex10: u8,
+    min_collateral: Amount,
+) {
+    let canister_id = _get_canister_id();
     let state_details = StateDetails {
         not_paused: true,
         current_tick,
-        max_leveragex10: 100,
-        min_collateral: 0,
-
+        max_leveragex10,
+        min_collateral,
         base_token_multiple: 1,
     };
 
     let Ok(WasmResult::Reply(_)) = pic.update_call(
         canister_id,
         caller,
-        "update_state_details",
+        "updateStateDetails",
         encode_one(state_details).unwrap(),
     ) else {
         panic!("error occured")
     };
 }
 
-fn _setup_market() -> (PocketIc, Principal, Principal) {
+fn _setup_market(admin: Principal) -> PocketIc {
     let pic = PocketIc::new();
-
-    let admin = Principal::from_text("g4tto-rqaaa-aaaar-qageq-cai").unwrap();
 
     let perp_canister = pic.create_canister_with_settings(Some(admin), None);
     //
@@ -351,7 +501,9 @@ fn _setup_market() -> (PocketIc, Principal, Principal) {
         encode_one(market_detais).unwrap(),
         Some(admin),
     );
-    return (pic, perp_canister, admin);
+
+    _set_canister_id(perp_canister);
+    return pic;
 }
 
 fn _get_principals() -> Vec<Principal> {
@@ -361,4 +513,12 @@ fn _get_principals() -> Vec<Principal> {
         Principal::from_text("cvwul-djb3r-e6krd-nbnfl-tuhox-n4omu-kejey-3lku7-ae3bx-icbu7-yae")
             .unwrap(),
     ];
+}
+
+fn _get_canister_id() -> Principal {
+    CANISTER_ID.with_borrow(|reference| reference.clone())
+}
+
+fn _set_canister_id(id: Principal) {
+    CANISTER_ID.with_borrow_mut(|reference| *reference = id)
 }

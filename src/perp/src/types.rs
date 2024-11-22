@@ -343,7 +343,7 @@ impl TickDetails {
 impl Storable for TickDetails {
     const BOUND: Bound = Bound::Bounded {
         max_size: 104,
-        is_fixed_size: true,
+        is_fixed_size: false,
     };
     fn from_bytes(bytes: Cow<[u8]>) -> Self {
         Decode!(bytes.as_ref(), Self).unwrap()

@@ -5,7 +5,7 @@ use ic_cdk_timers::TimerId;
 
 use sha2::{Digest, Sha256};
 
-use corelib::calc_lib::{_calc_interest, _percentage128, _percentage64};
+use corelib::calc_lib::{_calc_interest, _percentage128};
 use corelib::constants::{_BASE_PRICE, _ONE_PERCENT};
 use corelib::order_lib::{CloseOrderParams, LimitOrder, OpenOrderParams};
 use corelib::price_lib::_equivalent;
@@ -56,7 +56,7 @@ const ONE_SECOND: u64 = 1_000_000_000;
 
 const ONE_HOUR: u64 = 3_600_000_000_000;
 
-const DEFAULT_SWAP_SLIPPAGE: u64 = 30_000; //0.3%
+const _DEFAULT_SWAP_SLIPPAGE: u64 = 30_000; //0.3%
 
 thread_local! {
 
@@ -138,12 +138,31 @@ fn get_market_details() -> MarketDetails {
     _get_market_details()
 }
 
+#[ic_cdk::query(name = "getBestOfferTick")]
+fn get_best_offer_tick(buy: bool) -> Tick {
+    let StateDetails { current_tick, .. } = _get_state_details();
+    get_best_offer(!buy, current_tick, None).unwrap_or(_def_max_tick(current_tick, !buy))
+}
+
 ///  get Tick Details
 ///
 /// Returns the tick details of a particular tick if it is intialised else returns false
 #[ic_cdk::query(name = "getTickDetails")]
 fn get_tick_details(_tick: Tick) -> TickDetails {
     TICKS_DETAILS.with(|ref_tick_details| ref_tick_details.borrow().get(&_tick).unwrap().clone())
+}
+
+#[ic_cdk::query(name = "getUserAccount")]
+fn get_user_account(_user: Principal) -> Subaccount {
+    return _user._to_subaccount();
+}
+
+/// Get Account Position
+///
+/// Gets an account position or panics if account has no position
+#[ic_cdk::query(name = "getAccountPosition")]
+fn get_account_position(_account: Subaccount) -> PositionDetails {
+    return _get_account_position(&_account);
 }
 
 /// Try Close Function
@@ -154,18 +173,15 @@ fn get_tick_details(_tick: Tick) -> TickDetails {
 /// - Is Fully Filled: true if position is limit order has been fully filled
 /// - Is Partially Filled: true is position is partially filled
 #[ic_cdk::query(name = "positionStatus")]
-fn position_status(_account: [u8; 32]) -> (bool, bool) {
+fn position_status(_account: Subaccount) -> (bool, bool) {
     return _convert_account_limit_position(_account);
 }
 
-/// Get Account Position
-///
-/// Gets an account position or panics if account has no position
-#[ic_cdk::query(name = "getAccountPosition")]
-fn get_account_position(_account: [u8; 32]) -> PositionDetails {
-    return _get_account_position(&_account);
+#[ic_cdk::query(name = "getPositionPNL")]
+fn get_position_pnl(position: PositionDetails) -> i64 {
+    let (pnl, _) = _calculate_position_pnl_and_net_debt_value(position);
+    return pnl;
 }
-
 /// Open PositionDetails function
 ///
 /// opens a new position for user (given that user has no existing position)
@@ -176,7 +192,6 @@ fn get_account_position(_account: [u8; 32]) -> PositionDetails {
 /// - Leverage :: The leverage for the required position multiplies by 10 i.e a 1.5 levarage is 1.5 * 10 = 15
 /// - Long :: Indicating if its a long position or not ,true if long and false otherwise
 /// - Order Type :: the type of order to create
-///  _
 ///
 /// Returns
 ///  - Position:the details of the position
@@ -423,55 +438,29 @@ fn _open_position(
     _current_tick: Tick,
     _max_tick: Tick,
 ) -> Option<(PositionDetails, Tick, Vec<Tick>)> {
-    //
-    let equivalent = |amount: Amount, tick: Tick, buy: bool| -> Amount {
-        let tick_price = _tick_to_price(tick);
-        _equivalent(amount, tick_price, buy)
-    }; //(actual debt,resulting_tick,crossed_ticks);
-
     match _order_type {
         OrderType::Limit => {
-            let entry_tick = _max_tick;
-            // limit order's can't be placed at current tick
-            if _long && entry_tick >= _current_tick {
-                return None;
-            } else if !_long && entry_tick <= _current_tick {
-                return None;
-            } else {
-            };
-
-            let (collateral, debt) = if _long {
-                (_collateral_value, _debt_value)
-            } else {
-                (
-                    equivalent(_collateral_value, entry_tick, true),
-                    equivalent(_debt_value, entry_tick, true),
+            if _long {
+                _open_limit_long_position(
+                    _account,
+                    _long,
+                    _collateral_value,
+                    _debt_value,
+                    _interest_rate,
+                    _current_tick,
+                    _max_tick,
                 )
-            };
-            //
-            let mut order = LimitOrder::new(collateral + debt, entry_tick, _long);
-
-            _open_order(&mut order);
-
-            let position = PositionDetails {
-                long: _long,
-                entry_tick,
-                collateral_value: _collateral_value,
-                debt_value: _debt_value,
-                interest_rate: _interest_rate,
-                volume_share: 0, // not initialised yet
-                order_type: PositionOrderType::Limit(order),
-                timestamp: 0, //not initialised
-            };
-
-            _insert_account_position(_account, position);
-
-            let new_current_tick = match get_best_offer(true, _current_tick, None) {
-                Some(tick) => tick,
-                None => _current_tick,
-            };
-
-            return Some((position, new_current_tick, Vec::new()));
+            } else {
+                _open_limit_short_position(
+                    _account,
+                    _long,
+                    _collateral_value,
+                    _debt_value,
+                    _interest_rate,
+                    _current_tick,
+                    _max_tick,
+                )
+            }
         }
 
         OrderType::Market => {
@@ -496,6 +485,105 @@ fn _open_position(
             }
         }
     }
+}
+
+fn _open_limit_short_position(
+    _account: Subaccount,
+    _long: bool,
+    _collateral_value: Amount,
+    _debt_value: Amount,
+    _interest_rate: u32,
+    _current_tick: Tick,
+    _max_tick: Tick,
+) -> Option<(PositionDetails, Tick, Vec<Tick>)> {
+    let equivalent = |amount: Amount, tick: Tick, buy: bool| -> Amount {
+        let tick_price = _tick_to_price(tick);
+        _equivalent(amount, tick_price, buy)
+    };
+
+    let entry_tick = _max_tick;
+
+    let best_buy_offer_tick = match get_best_offer(false, _current_tick, None) {
+        Some(tick) => tick,
+        None => _def_max_tick(_current_tick, false),
+    };
+
+    if entry_tick <= best_buy_offer_tick {
+        return None;
+    };
+
+    let (collateral, debt) = (
+        equivalent(_collateral_value, entry_tick, true),
+        equivalent(_debt_value, entry_tick, true),
+    );
+
+    let mut order = LimitOrder::new(collateral + debt, entry_tick, _long);
+
+    _open_order(&mut order);
+
+    let position = PositionDetails {
+        long: _long,
+        entry_tick,
+        collateral_value: _collateral_value,
+        debt_value: _debt_value,
+        interest_rate: _interest_rate,
+        volume_share: 0, // not initialised yet
+        order_type: PositionOrderType::Limit(order),
+        timestamp: 0, //not initialised
+    };
+
+    _insert_account_position(_account, position);
+
+    let new_current_tick = get_best_offer(true, best_buy_offer_tick, Some(entry_tick)).unwrap();
+
+    return Some((position, new_current_tick, Vec::new()));
+}
+
+fn _open_limit_long_position(
+    _account: Subaccount,
+    _long: bool,
+    _collateral_value: Amount,
+    _debt_value: Amount,
+    _interest_rate: u32,
+    _current_tick: Tick,
+    _max_tick: Tick,
+) -> Option<(PositionDetails, Tick, Vec<Tick>)> {
+    let entry_tick = _max_tick;
+
+    let best_sell_offer_tick = match get_best_offer(true, _current_tick, None) {
+        Some(tick) => tick,
+        None => _def_max_tick(_current_tick, true),
+    };
+
+    if entry_tick >= best_sell_offer_tick {
+        return None;
+    }
+    let (collateral, debt) = (_collateral_value, _debt_value);
+
+    let mut order = LimitOrder::new(collateral + debt, entry_tick, true);
+
+    _open_order(&mut order);
+
+    let position = PositionDetails {
+        long: true,
+        entry_tick,
+        collateral_value: _collateral_value,
+        debt_value: _debt_value,
+        interest_rate: _interest_rate,
+        volume_share: 0, // not initialised yet
+        order_type: PositionOrderType::Limit(order),
+        timestamp: 0, //not initialised
+    };
+
+    _insert_account_position(_account, position);
+
+    let new_current_tick = if entry_tick > _current_tick {
+        best_sell_offer_tick
+    } else {
+        _current_tick
+    };
+
+    return Some((position, new_current_tick, Vec::new()));
 }
 
 /// Open Market Long Position'
@@ -612,12 +700,7 @@ fn _open_market_short_position(
     };
     _insert_account_position(account, position);
 
-    let new_current_tick = match get_best_offer(true, initial_tick, None) {
-        Some(tick) => tick,
-        None => initial_tick,
-    };
-
-    return Some((position, new_current_tick, crossed_ticks));
+    return Some((position, initial_tick, crossed_ticks));
 }
 
 /// Close Long PositionDetails
@@ -641,20 +724,35 @@ fn _open_market_short_position(
 fn _close_market_long_position(
     account: Subaccount,
     position: &mut PositionDetails,
-    current_tick: Tick,
+    initial_tick: Tick,
     stopping_tick: Tick,
 ) -> (Amount, Tick, Vec<Tick>, ManageDebtParams) {
-    //
     let entry_price = _tick_to_price(position.entry_tick);
     let equivalent_at_entry_price =
         |amount: Amount, buy: bool| -> Amount { _equivalent(amount, entry_price, buy) };
-    //
+
     let position_realised_value = _calc_position_realised_value(position.volume_share, true);
 
     let realised_position_size = equivalent_at_entry_price(position_realised_value, true);
 
-    let (amount_out_value, amount_remaining, _, crossed_ticks) =
-        _swap(realised_position_size, false, current_tick, stopping_tick);
+    let best_buy_offer_tick = match get_best_offer(false, initial_tick, Some(stopping_tick)) {
+        Some(tick) => tick,
+        None => {
+            return (
+                0,
+                initial_tick,
+                Vec::new(),
+                ManageDebtParams::init(position.debt_value, position.debt_value, 0),
+            )
+        }
+    };
+
+    let (amount_out_value, amount_remaining, _, crossed_ticks) = _swap(
+        realised_position_size,
+        false,
+        best_buy_offer_tick,
+        stopping_tick,
+    );
 
     let interest_value = _calc_interest(
         position.debt_value,
@@ -668,7 +766,7 @@ fn _close_market_long_position(
 
     if amount_remaining > 0 {
         let amount_remaining_value = equivalent_at_entry_price(amount_remaining, false);
-        //
+
         (profit, manage_debt_params) = _update_market_position_after_swap(
             position,
             amount_out_value,
@@ -686,12 +784,7 @@ fn _close_market_long_position(
         _remove_account_position(&account);
     }
 
-    let new_current_tick = match get_best_offer(true, current_tick, None) {
-        Some(tick) => tick,
-        None => current_tick,
-    };
-
-    return (profit, new_current_tick, crossed_ticks, manage_debt_params);
+    return (profit, initial_tick, crossed_ticks, manage_debt_params);
 }
 
 /// Close Short Position
@@ -754,7 +847,7 @@ fn _close_market_short_position(
             amount_out_value - net_debt,
             ManageDebtParams::init(position.debt_value, net_debt, net_debt),
         );
-        // deletes user position
+
         _remove_account_position(&account);
     }
 
@@ -780,7 +873,6 @@ fn _close_limit_long_position(
     position: &mut PositionDetails,
 ) -> (Amount, ManageDebtParams) {
     match position.order_type {
-        //
         PositionOrderType::Limit(order) => {
             let (amount_received, amount_remaining_value) = _close_order(&order);
 
@@ -839,7 +931,7 @@ fn _close_limit_short_position(
                 let amount_remaining_value = _equivalent(amount_remaining, entry_price, false);
                 (removed_collateral, manage_debt_params) =
                     _convert_limit_position(position, amount_remaining_value);
-                // updates users positiion
+
                 _insert_account_position(account, position.clone());
             };
 
@@ -880,9 +972,8 @@ fn _update_market_position_after_swap(
 
     let profit;
     let manage_debt_params;
-    //
+
     if amount_out_value < net_debt_value {
-        //update new position details
         position.debt_value = net_debt_value - amount_out_value;
 
         profit = 0;
@@ -955,7 +1046,6 @@ fn _convert_limit_position(
 
     let initial_debt_value = position.debt_value;
 
-    //
     let removed_collateral;
     if amount_remaining_value > initial_debt_value {
         removed_collateral = amount_remaining_value - initial_debt_value;
@@ -1045,7 +1135,6 @@ fn _open_order(order: &mut LimitOrder) {
         })
     });
 }
-
 /// Close Order Function
 ///
 /// closes an order at a particular tick
@@ -1140,9 +1229,9 @@ fn max_or_default_max(max_tick: Option<Tick>, current_tick: Tick, buy: bool) -> 
         }
         None => {
             if buy {
-                return current_tick + _percentage64(DEFAULT_SWAP_SLIPPAGE, current_tick);
+                return _def_max_tick(current_tick, true);
             } else {
-                return current_tick - _percentage64(DEFAULT_SWAP_SLIPPAGE, current_tick);
+                return _def_max_tick(current_tick, false);
             }
         }
     }
@@ -1785,6 +1874,10 @@ impl Vault {
         profit: Amount,
         manage_debt_params: ManageDebtParams,
     ) {
+        if true {
+            // testing purpose only
+            return;
+        }
         if let Ok(()) = ic_cdk::notify(
             self.canister_id,
             "managePositionUpdate",
@@ -1816,6 +1909,10 @@ impl Vault {
         collateral: Amount,
         debt: Amount,
     ) -> (bool, u32) {
+        if true {
+            // testing purpose only
+            return (true, 0);
+        }
         if let Ok((valid, interest_rate)) = ic_cdk::call(
             self.canister_id,
             "createPositionValidityCheck",

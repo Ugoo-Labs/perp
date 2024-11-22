@@ -59,7 +59,7 @@ impl<'a> OpenOrderParams<'a> {
 
                 self.integrals_bitmaps.insert(integral, flipped_bitmap);
 
-                TickDetails::default()
+                TickDetails::new()
             }
         };
 

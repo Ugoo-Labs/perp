@@ -4,7 +4,7 @@ use candid::{CandidType, Deserialize, Principal};
 
 use sha2::{Digest, Sha256};
 
-use icrc_ledger_types::icrc1::account::{Account, Subaccount};
+use icrc_ledger_types::icrc1::account::Subaccount;
 
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use ic_stable_structures::{DefaultMemoryImpl, StableBTreeMap, StableCell};
@@ -52,14 +52,6 @@ thread_local! {
 #[ic_cdk::init]
 fn init(vault_details: VaultDetails) {
     VAULT_DETAILS.with_borrow_mut(|reference| reference.set(vault_details).unwrap());
-}
-
-#[ic_cdk::query]
-fn get_user_account(user: Principal) -> Account {
-    return Account {
-        owner: ic_cdk::id(),
-        subaccount: Some(user._to_subaccount()),
-    };
 }
 
 /// Create  Position Validity Check

@@ -1,0 +1,64 @@
+type Asset = record { class : AssetClass; symbol : text };
+type AssetClass = variant { Cryptocurrency; FiatCurrency };
+type LimitOrder = record {
+  buy : bool;
+  init_lower_bound : nat;
+  init_removed_liquidity : nat;
+  init_tick_timestamp : nat64;
+  order_size : nat;
+  ref_tick : nat64;
+};
+type LiquidityBoundary = record {
+  upper_bound : nat;
+  lower_bound : nat;
+  lifetime_removed_liquidity : nat;
+};
+type MarketDetails = record {
+  vault_id : principal;
+  collateral_decimal : nat8;
+  quote_asset : Asset;
+  base_asset : Asset;
+  xrc_id : principal;
+};
+type OrderType = variant { Limit; Market };
+type PositionDetails = record {
+  debt_value : nat;
+  long : bool;
+  entry_tick : nat64;
+  order_type : PositionOrderType;
+  timestamp : nat64;
+  interest_rate : nat32;
+  collateral_value : nat;
+  volume_share : nat;
+};
+type PositionOrderType = variant { Limit : LimitOrder; Market };
+type Result = variant { Ok : PositionDetails; Err : text };
+type StateDetails = record {
+  max_leveragex10 : nat8;
+  not_paused : bool;
+  current_tick : nat64;
+  base_token_multiple : nat8;
+  min_collateral : nat;
+};
+type TickDetails = record {
+  liq_bounds_token0 : LiquidityBoundary;
+  liq_bounds_token1 : LiquidityBoundary;
+  created_timestamp : nat64;
+};
+service : (MarketDetails) -> {
+  closePosition : (opt nat64) -> (nat);
+  getAccountPosition : (blob) -> (PositionDetails) query;
+  getMarketDetails : () -> (MarketDetails) query;
+  getStateDetails : () -> (StateDetails) query;
+  getTickDetails : (nat64) -> (TickDetails) query;
+  getUserAccount : (principal) -> (blob) query;
+  liquidatePosition : (principal) -> ();
+  openPosition : (nat, bool, OrderType, nat8, opt nat64, nat64, nat64) -> (
+      Result,
+    );
+  positionStatus : (blob) -> (bool, bool) query;
+  retryAccountError : (principal) -> ();
+  startTimer : () -> ();
+  successNotification : (blob, nat64) -> ();
+  updateStateDetails : (StateDetails) -> ();
+}
