@@ -89,8 +89,6 @@ thread_local! {
         mem.get(_INTEGRALS_BITMAPS_MEMORY)
     }))) ;
 
-
-
     static ACCOUNTS_POSITION:RefCell<StableBTreeMap<Subaccount,PositionDetails,Memory>> = RefCell::new(
         StableBTreeMap::init(MEMORY_MANAGER.with(|s|{
         s.borrow().get(_ACCOUNTS_POSITION_MEMORY)
@@ -1874,10 +1872,6 @@ impl Vault {
         profit: Amount,
         manage_debt_params: ManageDebtParams,
     ) {
-        if true {
-            // testing purpose only
-            return;
-        }
         if let Ok(()) = ic_cdk::notify(
             self.canister_id,
             "managePositionUpdate",
@@ -1909,10 +1903,6 @@ impl Vault {
         collateral: Amount,
         debt: Amount,
     ) -> (bool, u32) {
-        if true {
-            // testing purpose only
-            return (true, 0);
-        }
         if let Ok((valid, interest_rate)) = ic_cdk::call(
             self.canister_id,
             "createPositionValidityCheck",
